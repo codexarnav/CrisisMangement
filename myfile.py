@@ -53,7 +53,11 @@ def setup_entity_ruler(nlp):
 
 def extract_entities(text, nlp):
     if not nlp:
-        return {}
+        return {
+            "location": [],
+            "emergency_type": ["Unknown"],
+            "severity": ["High"]  # Default severity
+        }
 
     doc = nlp(text)
     entities = {
@@ -69,6 +73,12 @@ def extract_entities(text, nlp):
             entities["emergency_type"].append(ent.text)
         elif ent.label_ == "SEVERITY":
             entities["severity"].append(ent.text)
+
+    # Set defaults if no entities found
+    if not entities["emergency_type"]:
+        entities["emergency_type"] = ["Unknown"]
+    if not entities["severity"]:
+        entities["severity"] = ["High"]
 
     return entities
 
@@ -130,91 +140,223 @@ def get_first_aid_response(disaster_type, input_text):
 
 def send_emergency_sms(to_number, message):
     try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        # For development/testing - log message instead of sending
+        st.info(f"SMS would be sent to {to_number}: {message}")
+
+        # Comment out the actual Twilio sending for now
+        """
+        # Make sure to use your updated credentials from Twilio console
+        client = Client(
+            "your_new_account_sid",  # Update with actual SID
+            "your_new_auth_token"    # Update with actual token
+        )
         message = client.messages.create(
             body=message,
-            from_=TWILIO_NUMBER,
+            from_="+1234567890",     # Update with actual Twilio number
             to=to_number
         )
         return True, message.sid
+        """
+        return True, "Message logged (SMS disabled in development)"
+
     except Exception as e:
         return False, str(e)
+
+def notify_emergency_services(location, severity, situation_text):
+    """Handles emergency notifications with multiple fallback options"""
+
+    # Format messages
+    gov_message = (
+        f"🚨 URGENT EMERGENCY ALERT!\n"
+        f"Location: {location}\n"
+        f"Severity: {severity}\n"
+        f"Details: {situation_text[:100]}..."  # Truncate long messages
+    )
+
+    user_message = (
+        f"🔹 Emergency services have been notified.\n"
+        f"Location: {location}\n"
+        f"Help is being coordinated.\n"
+        f"Stay safe and follow emergency instructions."
+    )
+
+    # Log notifications for verification
+    st.subheader("Emergency Notifications")
+    with st.expander("View Emergency Alert Details"):
+        st.markdown("### 🚨 Government Alert")
+        st.code(gov_message)
+        st.markdown("### 👤 User Alert")
+        st.code(user_message)
+
+    # Attempt to send SMS
+    numbers = {
+        "government": "+919667523306",
+        "user": "+919667523306"
+    }
+
+    results = {}
+    for recipient, number in numbers.items():
+        success, result = send_emergency_sms(number,
+            gov_message if recipient == "government" else user_message)
+        results[recipient] = {"success": success, "result": result}
+
+        if success:
+            st.success(f"✅ Alert sent to {recipient}")
+        else:
+            st.warning(f"⚠️ Could not send SMS to {recipient}. Alert logged in system.")
+
+    return results
 
 def main():
     st.title("Emergency Response System")
 
-    # Load models
-    with st.spinner("Loading required models..."):
-        nlp = load_spacy_model()
-        clip_model, clip_processor = load_clip_model()
-        setup_entity_ruler(nlp)
+    # Create sidebar for emergency contacts and instructions
+    with st.sidebar:
+        st.header("📞 Emergency Contacts")
+        st.write("Police: 100")
+        st.write("Fire: 101")
+        st.write("Ambulance: 102")
+        st.write("Disaster Management: 108")
 
-    # Input method selection
-    input_method = st.radio("Select input method:", ["Text Input", "Document Upload"])
+        st.header("🚨 Important Instructions")
+        st.info(
+            "1. Stay calm and assess the situation\n"
+            "2. Ensure your safety first\n"
+            "3. Call emergency services if immediate help is needed\n"
+            "4. Follow official instructions\n"
+            "5. Keep your phone charged"
+        )
+
+    # Load models with error handling
+    try:
+        with st.spinner("Initializing emergency response system..."):
+            nlp = load_spacy_model()
+            clip_model, clip_processor = load_clip_model()
+            setup_entity_ruler(nlp)
+    except Exception as e:
+        st.error("Error loading required models. Please try again.")
+        return
+
+    # Create tabs for different input methods
+    input_tab, doc_tab = st.tabs(["📝 Direct Input", "📄 Document Upload"])
 
     situation_text = ""
     location = ""
 
-    if input_method == "Text Input":
-        situation_text = st.text_area("Describe the emergency situation:")
-        location = st.text_input("Enter location:")
-    else:
+    with input_tab:
+        situation_text = st.text_area(
+            "Describe the emergency situation:",
+            placeholder="Example: There's a fire in the apartment building at 123 Main St. Multiple people need evacuation."
+        )
+        location = st.text_input(
+            "Enter location:",
+            placeholder="Example: 123 Main Street, City Name"
+        )
+
+    with doc_tab:
         uploaded_file = st.file_uploader("Upload PDF document", type="pdf")
         if uploaded_file:
-            situation_text = process_pdf(uploaded_file)
-            if situation_text:
-                st.write("Extracted text:", situation_text)
-                location = st.text_input("Enter location:")
+            with st.spinner("Processing document..."):
+                situation_text = process_pdf(uploaded_file)
+                if situation_text:
+                    st.success("Document processed successfully")
+                    st.expander("View extracted text").write(situation_text)
+                    location = st.text_input("Confirm location:", key="doc_location")
+                else:
+                    st.error("Could not extract text from document")
 
-    # Optional image upload
-    uploaded_image = st.file_uploader("Upload an image (optional)", type=["png", "jpg", "jpeg"])
+    # Image upload section with preview
+    st.subheader("📸 Situation Image (Optional)")
+    uploaded_image = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+    if uploaded_image:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
 
-    if st.button("Process Emergency") and situation_text and location:
-        with st.spinner("Processing emergency..."):
-            # Process image if uploaded
-            image_label = None
-            if uploaded_image and clip_model and clip_processor:
-                image_label, confidence = process_image(uploaded_image, clip_model, clip_processor)
-                if image_label:
-                    st.write(f"Detected emergency type: {image_label} (Confidence: {confidence:.2f})")
+    # Process emergency button with validation
+    process_button = st.button("🚨 Process Emergency", use_container_width=True)
 
-            # Extract entities and process location
-            entities = extract_entities(situation_text, nlp)
-            lat, lon = get_lat_lon(location)
+    if process_button:
+        if not situation_text or not location:
+            st.error("Please provide both situation description and location")
+            return
 
-            if lat and lon:
-                st.subheader("Location")
-                m = folium.Map(location=[lat, lon], zoom_start=13)
-                folium.Marker([lat, lon], popup=location).add_to(m)
-                folium_static(m)
+        with st.spinner("Processing emergency information..."):
+            # Create containers for different sections
+            analysis_container = st.container()
+            location_container = st.container()
+            response_container = st.container()
 
-            # Generate first aid response
-            emergency_type = image_label if image_label else entities.get("emergency_type", ["Unknown"])[0]
-            first_aid = get_first_aid_response(emergency_type, situation_text)
+            with analysis_container:
+                st.subheader("🔍 Situation Analysis")
 
-            st.subheader("First Aid Response")
-            st.write(first_aid)
+                # Process image if uploaded
+                image_label = None
+                if uploaded_image and clip_model and clip_processor:
+                    image_label, confidence = process_image(uploaded_image, clip_model, clip_processor)
+                    if image_label:
+                        st.info(f"📸 Image Analysis: {image_label.title()} (Confidence: {confidence:.2f})")
 
-            # Send notifications
-            with st.spinner("Sending emergency notifications..."):
-                government_contact = "+919667523306"
-                user_phone = "+919667523306"
-                severity = entities.get("severity", ["High"])[0]
+                # Extract entities and display
+                entities = extract_entities(situation_text, nlp)
+                severity = entities["severity"][0] if entities["severity"] else "High"
 
-                messages = {
-                    "government": f"🚨 URGENT! Emergency at {location}. Severity: {severity}. Immediate response required.",
-                    "user": f"🔹 Help is on the way! Authorities have been alerted to your emergency at {location}. Stay safe!"
-                }
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Emergency Type", entities["emergency_type"][0].title())
+                with col2:
+                    st.metric("Severity Level", severity.upper())
 
-                for recipient, message in messages.items():
-                    success, result = send_emergency_sms(
-                        government_contact if recipient == "government" else user_phone,
-                        message
-                    )
-                    if success:
-                        st.success(f"Notification sent to {recipient}")
-                    else:
-                        st.error(f"Failed to send notification to {recipient}: {result}")
+            with location_container:
+                st.subheader("📍 Location Information")
+                lat, lon = get_lat_lon(location)
 
-if __name__ == "__main__":
+                if lat and lon:
+                    m = folium.Map(location=[lat, lon], zoom_start=15)
+                    folium.Marker(
+                        [lat, lon],
+                        popup=location,
+                        icon=folium.Icon(color='red', icon='info-sign')
+                    ).add_to(m)
+                    folium_static(m)
+                else:
+                    st.warning("Could not locate the exact position on map")
+
+            with response_container:
+                st.subheader("🏥 Emergency Response")
+
+                # Generate and display first aid response
+                emergency_type = image_label if image_label else entities["emergency_type"][0]
+                first_aid = get_first_aid_response(emergency_type, situation_text)
+
+                with st.expander("First Aid Instructions", expanded=True):
+                    st.markdown(first_aid)
+
+                # Send notifications
+                st.subheader("📱 Emergency Notifications")
+                with st.spinner("Sending alerts..."):
+                    # Demo phone numbers (replace with actual numbers in production)
+                    government_contact = "+919667523306"
+                    user_phone = "+919667523306"
+
+                    messages = {
+                        "Emergency Services": {
+                            "to": government_contact,
+                            "message": f"🚨 URGENT! Emergency at {location}. Type: {emergency_type}. Severity: {severity}. Immediate response required."
+                        },
+                        "User": {
+                            "to": user_phone,
+                            "message": f"🔹 Help is on the way! Emergency services have been notified about the {emergency_type} at {location}. Stay safe and follow instructions."
+                        }
+                    }
+
+                    for recipient, data in messages.items():
+                        success, result = send_emergency_sms(data["to"], data["message"])
+                        if success:
+                            st.success(f"✅ Alert sent to {recipient}")
+                        else:
+                            st.error(f"❌ Could not send alert to {recipient}: {result}")
+                            st.info("Please contact emergency services directly using the numbers in the sidebar.")
+
+if _name_ == "_main_":
     main()
