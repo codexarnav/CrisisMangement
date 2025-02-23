@@ -1,0 +1,8 @@
+streamlit 
+requests
+folium
+streamlit_folium 
+spacy
+google.generativeai 
+PyPDF2
+torch
